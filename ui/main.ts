@@ -87,7 +87,7 @@ interface IdCheck {
 interface TauriGlobal {
   core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
   event: { listen<T>(event: string, cb: (e: { payload: T }) => void): Promise<() => void> };
-  window: { getCurrentWindow(): { minimize(): Promise<void>; toggleMaximize(): Promise<void>; close(): Promise<void> } };
+  window: { getCurrentWindow(): { minimize(): Promise<void>; close(): Promise<void> } };
 }
 const tauri = (window as unknown as { __TAURI__: TauriGlobal }).__TAURI__;
 
@@ -288,7 +288,6 @@ function renderNav(): void {
     server: t("Сервер", "Server"),
   };
   $("win-min").title = t("Свернуть", "Minimize");
-  $("win-max").title = t("Развернуть", "Maximize");
   $("win-close").title = t("Закрыть: сервер останется в трее", "Close: the server stays in the tray");
   for (const b of document.querySelectorAll<HTMLElement>(".tab")) {
     b.textContent = labels[b.dataset.tab!] ?? "";
@@ -858,23 +857,15 @@ function renderModels(): void {
       h(
         "td",
         {},
-        h("div", { class: "mono-strong" }, r.local_id),
-        r.display_name ? h("div", { class: "cell-sub" }, r.display_name) : null,
+        r.display_name
+          ? h("div", { class: "cell-title" }, r.display_name)
+          : h("div", { class: "mono-strong" }, r.local_id),
+        r.display_name ? h("div", { class: "cell-sub mono" }, r.local_id) : null,
         r.warning ? h("div", { class: "cell-warn" }, r.warning) : null,
       ),
       h("td", { class: "cell-arrow" }, "→"),
       h("td", {}, h("div", { class: "mono-strong" }, r.upstream_model)),
       h("td", {}, provider?.name ?? h("span", { class: "signal" }, t("удалён", "deleted"))),
-      h(
-        "td",
-        {},
-        h(
-          "div",
-          { class: "chips" },
-          r.tier ? h("span", { class: "tag", title: r.family_default ? t("По умолчанию для tier", "Default for the tier") : undefined }, r.family_default ? `${r.tier} ★` : r.tier) : null,
-          r.supports_1m ? h("span", { class: "tag", title: t("supports_1m: Claude Desktop покажет вариант с суффиксом [1m]", "supports_1m: Claude Desktop shows a variant with the [1m] suffix") }, "1M") : null,
-        ),
-      ),
       h(
         "td",
         { class: "cell-actions" },
@@ -896,7 +887,7 @@ function renderModels(): void {
       h(
         "table",
         {},
-        h("colgroup", {}, col("48"), col(""), col("20"), col(""), col("16%"), col("100"), col("68")),
+        h("colgroup", {}, col("48"), col(""), col("20"), col(""), col("18%"), col("68")),
         h(
           "thead",
           {},
@@ -904,11 +895,10 @@ function renderModels(): void {
             "tr",
             {},
             h("th", {}, t("Вкл", "On")),
-            h("th", {}, t("Локальный id", "Local id")),
+            h("th", {}, t("Модель", "Model")),
             h("th", { class: "cell-arrow" }, ""),
             h("th", {}, t("Реальный id", "Real id")),
             h("th", {}, t("Провайдер", "Provider")),
-            h("th", {}, "Tier"),
             h("th", {}, ""),
           ),
         ),
@@ -1043,13 +1033,19 @@ function openRule(existing?: Rule): void {
       d.tier
         ? h(
             "label",
-            { class: "check" },
+            {
+              class: "check",
+              title: t(
+                `Если у нескольких моделей tier ${d.tier}, Claude Desktop возьмёт эту, когда ему нужен ${d.tier}: например, для короткого имени «${d.tier}».`,
+                `When several models have the ${d.tier} tier, Claude Desktop uses this one whenever it needs ${d.tier}, for example for the bare "${d.tier}" alias.`,
+              ),
+            },
             h("input", {
               type: "checkbox",
               checked: d.family_default,
               onchange: (e: Event) => (d.family_default = (e.target as HTMLInputElement).checked),
             }),
-            t(`По умолчанию для ${d.tier}`, `Default for ${d.tier}`),
+            t(`Основная для ${d.tier}`, `Main ${d.tier} model`),
           )
         : null,
     );
@@ -1076,28 +1072,26 @@ function openRule(existing?: Rule): void {
             },
           }),
           h("div", { class: "slot", "data-id-hint": "" }, idHint()),
-          existing
-            ? null
-            : h(
-                "div",
-                { class: "chips" },
-                ...["claude-sonnet-5.5", "claude-opus-5.5", "claude-haiku-5.5"].map((s) =>
-                  h(
-                    "button",
-                    {
-                      type: "button",
-                      class: "chip",
-                      onclick: () => {
-                        d.local_id = s;
-                        if (!tierTouched) d.tier = guessTier(s);
-                        checkId();
-                        draw();
-                      },
-                    },
-                    s,
-                  ),
-                ),
+          h(
+            "div",
+            { class: "chips" },
+            ...["claude-sonnet-5.5", "claude-opus-5.5", "claude-haiku-5.5"].map((s) =>
+              h(
+                "button",
+                {
+                  type: "button",
+                  class: "chip",
+                  onclick: () => {
+                    d.local_id = s;
+                    if (!tierTouched) d.tier = guessTier(s);
+                    checkId();
+                    draw();
+                  },
+                },
+                s,
               ),
+            ),
+          ),
         ),
         h(
           "div",
@@ -1161,12 +1155,12 @@ function openRule(existing?: Rule): void {
               "div",
               { class: "form-row" },
               field(
-                t("Контекст, токенов", "Context, tokens"),
+                t("Размер контекста", "Context size"),
                 h("input", {
                   type: "number",
                   min: "1",
                   value: d.max_input_tokens ?? "",
-                  placeholder: "max_input_tokens",
+                  placeholder: t("в токенах, например 128000", "in tokens, e.g. 128000"),
                   oninput: (e: Event) => {
                     d.max_input_tokens = num((e.target as HTMLInputElement).value);
                     updateSummary();
@@ -1356,6 +1350,7 @@ function renderServer(): void {
       if (e.key === "Enter") applyPort();
     },
   });
+  const info = (label: string, value: Child) => h("div", { class: "info-row" }, h("span", { class: "mono-label" }, label), h("div", {}, value));
   const setting = (label: string, desc: Child, control: Child = null) =>
     h("div", { class: "setting" }, h("span", { class: "mono-label" }, label), h("div", { class: "desc" }, desc), h("div", {}, control));
 
@@ -1388,24 +1383,25 @@ function renderServer(): void {
           onchange: (e: Event) => act(() => call<UiState>("set_autostart", { enabled: (e.target as HTMLInputElement).checked })),
         }),
       ),
-      setting(
-        t("Трей", "Tray"),
-        t(
-          "Закрытие окна полностью выгружает интерфейс из памяти. Сервер продолжает работать в трее; клик по иконке откроет окно снова. Выход — через меню трея.",
-          "Closing the window unloads the interface from memory. The server keeps running in the tray; clicking the icon opens the window again. Quit from the tray menu.",
+    ),
+    h(
+      "div",
+      { class: "block-gap" },
+      h("div", { class: "block-title" }, h("span", { class: "eyebrow" }, t("О приложении", "About"))),
+      h(
+        "div",
+        { class: "card info-card" },
+        info(t("Версия", "Version"), h("span", { class: "mono strong" }, state.version)),
+        info(t("Настройки", "Settings"), h("span", { class: "mono strong" }, state.config_dir)),
+        info(t("Ключи", "Keys"), t("Windows Credential Manager, запись Retranslator", "Windows Credential Manager, entry Retranslator")),
+        info(
+          t("Трей", "Tray"),
+          t(
+            "Закрытие окна выгружает интерфейс из памяти, сервер продолжает работать в трее. Клик по иконке откроет окно снова, выход — через меню трея.",
+            "Closing the window unloads the interface from memory; the server keeps running in the tray. Click the icon to open the window again, quit from the tray menu.",
+          ),
         ),
       ),
-      setting(
-        t("Данные", "Data"),
-        h(
-          "span",
-          {},
-          t("Настройки: ", "Settings: "),
-          h("span", { class: "mono" }, state.config_dir),
-          t(". Ключи хранятся в Windows Credential Manager под именем Retranslator.", ". Keys are stored in Windows Credential Manager under the name Retranslator."),
-        ),
-      ),
-      setting(t("Версия", "Version"), h("span", { class: "mono" }, state.version)),
     ),
   );
 }
@@ -1467,7 +1463,6 @@ async function boot(): Promise<void> {
   $("lang-toggle").addEventListener("click", () => void toggleLanguage());
   const win = tauri.window.getCurrentWindow();
   $("win-min").addEventListener("click", () => void win.minimize());
-  $("win-max").addEventListener("click", () => void win.toggleMaximize());
   $("win-close").addEventListener("click", () => void win.close());
 
   await tauri.event.listen("state-changed", refreshSoon);

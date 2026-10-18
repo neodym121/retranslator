@@ -1,6 +1,6 @@
 [package]
 name = "retranslator"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local Anthropic-compatible gateway that relays Claude Desktop requests to any provider"
 authors = ["neodym121"]
 repository = "https://github.com/neodym121/retranslator"

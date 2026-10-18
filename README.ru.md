@@ -6,7 +6,6 @@
 
 <p align="center">
   <a href="https://github.com/neodym121/retranslator/releases/latest"><img src="https://img.shields.io/github/v/release/neodym121/retranslator?color=eeeeee&labelColor=101010" alt="Релиз"></a>
-  <a href="https://github.com/neodym121/retranslator/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/neodym121/retranslator/build.yml?label=build&labelColor=101010" alt="Сборка"></a>
   <img src="https://img.shields.io/badge/platform-Windows-eeeeee?labelColor=101010" alt="Windows">
   <img src="https://img.shields.io/badge/Tauri-2-eeeeee?logo=tauri&labelColor=101010" alt="Tauri 2">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/neodym121/retranslator?color=eeeeee&labelColor=101010" alt="MIT"></a>
