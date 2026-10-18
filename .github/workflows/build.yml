@@ -1,0 +1,71 @@
+name: Build
+
+# Runs on a tag like v0.1.0 or from the Actions tab. Produces two downloads as workflow artifacts:
+# the .msi installer and a portable single .exe. Releases are published from them by hand.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend deps
+        run: npm ci
+
+      # The Rust build embeds dist/, so the UI goes first even for the tests.
+      - name: Build frontend
+        run: npm run build
+
+      - name: Run tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build app and .msi
+        run: npm run tauri build
+
+      - name: Collect downloads
+        shell: pwsh
+        run: |
+          $version = node -p "require('./src-tauri/tauri.conf.json').version"
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item src-tauri/target/release/bundle/msi/*.msi out/
+          # The release binary embeds the UI: on its own it is the portable version.
+          Copy-Item src-tauri/target/release/retranslator.exe "out/Retranslator_${version}_x64_portable.exe"
+          Get-ChildItem out
+
+      - name: Upload .msi
+        uses: actions/upload-artifact@v4
+        with:
+          name: retranslator-msi
+          path: out/*.msi
+          if-no-files-found: error
+
+      - name: Upload portable .exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: retranslator-portable
+          path: out/*_portable.exe
+          if-no-files-found: error
