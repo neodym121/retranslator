@@ -21,7 +21,8 @@ Claude-style model ids (`claude-sonnet-5.5`), and each request goes to the provi
 
 - Any OpenAI-compatible provider: presets for OpenAI, Google Gemini, OpenRouter and PolzaAI, or your own base URL.
 - Full Anthropic ⇄ OpenAI conversion: text, images, PDFs, tools, thinking, streaming, errors, token counting.
-- Model rules: local id → provider + real id, with display name, tier, context size and the 1M variant.
+- Model rules: local id → provider + real id, with display name, tier, context size and the 1M variant. For aggregators (OpenRouter, PolzaAI) a rule can pin a sub-provider.
+- Two front doors on one port: the Anthropic API for Claude Desktop, and OpenAI `/v1/chat/completions` for any other client.
 - Listens on `127.0.0.1` only. API keys live in Windows Credential Manager.
 - Request log, tray icon, Russian and English interface.
 

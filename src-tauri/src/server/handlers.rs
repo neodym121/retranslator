@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{OriginalUri, Path, State};
 use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
@@ -28,7 +28,7 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 }
 
 /// Accepts `x-api-key: <key>` or `Authorization: Bearer <key>`.
-fn authorize(ctx: &Ctx, headers: &HeaderMap) -> Result<(), ApiError> {
+pub(super) fn authorize(ctx: &Ctx, headers: &HeaderMap) -> Result<(), ApiError> {
     let expected = ctx.core.local_key();
     let x_api_key = headers.get("x-api-key").and_then(|v| v.to_str().ok()).map(str::trim);
     let bearer = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| {
@@ -106,14 +106,14 @@ pub async fn count_tokens(State(ctx): State<Ctx>, headers: HeaderMap, body: Byte
     }
 }
 
-pub async fn list_models(State(ctx): State<Ctx>, headers: HeaderMap) -> Response {
+pub async fn list_models(State(ctx): State<Ctx>, OriginalUri(uri): OriginalUri, headers: HeaderMap) -> Response {
     let started = Instant::now();
     if let Err(err) = authorize(&ctx, &headers) {
-        record_simple(&ctx, "GET", "/v1/models", started, err.status, Some(err.message.clone()));
+        record_simple(&ctx, "GET", uri.path(), started, err.status, Some(err.message.clone()));
         return error_response(&err);
     }
     let body = mapping::models_response(&ctx.core.config());
-    record_simple(&ctx, "GET", "/v1/models", started, 200, None);
+    record_simple(&ctx, "GET", uri.path(), started, 200, None);
     Json(body).into_response()
 }
 

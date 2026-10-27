@@ -19,6 +19,9 @@ pub struct Provider {
     /// Preset key it was created from (`openai`, `gemini`, …, `custom`).
     pub preset: String,
     pub base_url: String,
+    /// An aggregator (OpenRouter style) that serves a model through several sub-providers:
+    /// its rules may name the one to use.
+    pub aggregator: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -27,14 +30,21 @@ pub struct Preset {
     pub name: &'static str,
     /// OpenAI-compatible base URL, as for the OpenAI SDK (`…/v1`). Empty for a custom provider.
     pub base_url: &'static str,
+    /// Fixed for the preset; a custom provider has its own switch.
+    pub aggregator: bool,
 }
 
 pub const PRESETS: &[Preset] = &[
-    Preset { key: "openai", name: "OpenAI", base_url: "https://api.openai.com/v1" },
-    Preset { key: "gemini", name: "Google Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai" },
-    Preset { key: "openrouter", name: "OpenRouter", base_url: "https://openrouter.ai/api/v1" },
-    Preset { key: "polza", name: "PolzaAI", base_url: "https://polza.ai/api/v1" },
-    Preset { key: CUSTOM_PRESET, name: "Custom", base_url: "" },
+    Preset { key: "openai", name: "OpenAI", base_url: "https://api.openai.com/v1", aggregator: false },
+    Preset {
+        key: "gemini",
+        name: "Google Gemini",
+        base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+        aggregator: false,
+    },
+    Preset { key: "openrouter", name: "OpenRouter", base_url: "https://openrouter.ai/api/v1", aggregator: true },
+    Preset { key: "polza", name: "PolzaAI", base_url: "https://polza.ai/api/v1", aggregator: true },
+    Preset { key: CUSTOM_PRESET, name: "Custom", base_url: "", aggregator: false },
 ];
 
 /// A preset with a fixed name and URL; `None` for custom providers.
@@ -42,12 +52,13 @@ pub fn fixed_preset(key: &str) -> Option<&'static Preset> {
     PRESETS.iter().find(|p| p.key == key && p.key != CUSTOM_PRESET)
 }
 
-/// Preset providers always carry the preset's name and URL: only the key is the user's.
+/// Preset providers always carry the preset's name, URL and aggregator flag: only the key is the user's.
 pub fn apply_preset(provider: &mut Provider) {
     match fixed_preset(&provider.preset) {
         Some(preset) => {
             provider.name = preset.name.to_string();
             provider.base_url = preset.base_url.to_string();
+            provider.aggregator = preset.aggregator;
         }
         None => provider.preset = CUSTOM_PRESET.to_string(),
     }
@@ -284,6 +295,22 @@ mod tests {
         apply_preset(&mut c);
         assert_eq!((c.preset.as_str(), c.name.as_str()), ("custom", "Мой"));
         assert!(fixed_preset("custom").is_none());
+    }
+
+    #[test]
+    fn aggregator_presets() {
+        let aggregators: Vec<_> = PRESETS.iter().filter(|p| p.aggregator).map(|p| p.key).collect();
+        assert_eq!(aggregators, vec!["openrouter", "polza"]);
+        // A preset decides by itself; a custom provider keeps its own switch.
+        let mut or = Provider { preset: "openrouter".into(), ..Default::default() };
+        apply_preset(&mut or);
+        assert!(or.aggregator);
+        let mut oa = Provider { preset: "openai".into(), aggregator: true, ..Default::default() };
+        apply_preset(&mut oa);
+        assert!(!oa.aggregator);
+        let mut c = Provider { preset: "custom".into(), aggregator: true, ..Default::default() };
+        apply_preset(&mut c);
+        assert!(c.aggregator);
     }
 
     #[test]

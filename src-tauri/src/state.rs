@@ -45,7 +45,7 @@ impl Core {
         cfg.providers.iter_mut().for_each(crate::providers::apply_preset);
         crate::i18n::set(cfg.language);
         if !config_path.exists() {
-            // First launch: write the defaults so the data folder shown in the UI exists.
+            // First launch: write the defaults so the config file exists.
             if let Err(e) = config::save(&config_path, &cfg) {
                 eprintln!("config: {e}");
             }
@@ -75,10 +75,6 @@ impl Core {
 
     pub fn config(&self) -> RwLockReadGuard<'_, AppConfig> {
         self.config.read().unwrap()
-    }
-
-    pub fn config_dir(&self) -> PathBuf {
-        self.config_path.parent().map(PathBuf::from).unwrap_or_default()
     }
 
     /// Applies a change to a copy, saves it, then swaps it in; a failed save changes nothing.

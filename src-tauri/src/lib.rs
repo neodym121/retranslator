@@ -15,6 +15,7 @@ pub mod tray;
 use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_autostart::MacosLauncher;
 
 use commands::AppState;
 use state::{Core, Notice};
@@ -52,6 +53,8 @@ fn open_main_window(app: &AppHandle) -> tauri::Result<()> {
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| show_main_window(app)))
+        // Launch at login goes straight into the tray (see `--hidden` below).
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             let core = Core::load(config::config_path(&dir), Box::new(config::KeyringStore))
@@ -68,7 +71,7 @@ pub fn run() {
                 }
             }));
             let server = Arc::new(server::Server::default());
-            app.manage(AppState { core: core.clone(), server: server.clone() });
+            app.manage(AppState { core: core.clone(), server: server.clone(), app: app.handle().clone() });
             tray::create(app.handle())?;
 
             if core.config().autostart_server {
@@ -97,10 +100,12 @@ pub fn run() {
             commands::start_server,
             commands::stop_server,
             commands::set_port,
-            commands::set_autostart,
+            commands::set_autostart_server,
+            commands::set_autostart_app,
             commands::set_language,
             commands::regenerate_key,
             commands::save_provider,
+            commands::get_provider_key,
             commands::delete_provider,
             commands::fetch_models,
             commands::test_provider,

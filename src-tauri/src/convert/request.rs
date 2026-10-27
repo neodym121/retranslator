@@ -12,6 +12,8 @@ pub struct OpenAiOptions {
     pub stream: bool,
     pub max_tokens_cap: Option<u64>,
     pub quirks: Quirks,
+    /// Aggregator sub-provider to pin the request to.
+    pub sub_provider: Option<String>,
 }
 
 /// OpenAI allows at most four stop sequences.
@@ -85,6 +87,11 @@ pub fn to_openai(req: &MessagesRequest, opts: &OpenAiOptions) -> Value {
                 body.insert("parallel_tool_calls".into(), json!(false));
             }
         }
+    }
+
+    // OpenRouter and PolzaAI both route by `provider.only`: nothing but this sub-provider serves the request.
+    if let Some(sub) = &opts.sub_provider {
+        body.insert("provider".into(), json!({ "only": [sub] }));
     }
 
     if opts.stream {
@@ -448,6 +455,14 @@ mod tests {
         assert_eq!(out["stream"], true);
         assert_eq!(out["stream_options"]["include_usage"], true);
         assert!(out.get("max_tokens").is_none() && out.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
+    fn sub_provider_pins_the_aggregator_route() {
+        let req = json!({"model": "m", "messages": [{"role": "user", "content": "x"}]});
+        let out = convert(req.clone(), OpenAiOptions { sub_provider: Some("DeepInfra".into()), ..opts() });
+        assert_eq!(out["provider"], json!({"only": ["DeepInfra"]}));
+        assert!(convert(req, opts()).get("provider").is_none());
     }
 
     #[test]

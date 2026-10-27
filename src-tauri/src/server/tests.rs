@@ -72,6 +72,7 @@ fn config(base: &str) -> AppConfig {
             name: "Mock".into(),
             preset: "custom".into(),
             base_url: base.into(),
+            ..Default::default()
         }],
         rules: vec![ModelRule {
             id: "r1".into(),
@@ -246,6 +247,171 @@ async fn openai_non_stream_is_converted_both_ways() {
     assert_eq!((log.status, log.input_tokens, log.output_tokens), (200, 40, 9));
     assert_eq!(log.upstream_model, "deepseek-v4.1-flash");
     assert_eq!(log.provider, "Mock");
+}
+
+#[tokio::test]
+async fn aggregator_rule_pins_the_sub_provider() {
+    let seen: Shared = Default::default();
+    let mock = Router::new()
+        .route(
+            "/v1/chat/completions",
+            post(|State(seen): State<Shared>, headers: HeaderMap, Json(body): Json<Value>| async move {
+                record(&seen, &headers, &body);
+                Json(json!({
+                    "id": "cmpl-1",
+                    "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+                }))
+            }),
+        )
+        .with_state(seen.clone());
+    let base = spawn(mock).await;
+    let mut cfg = config(&format!("{base}/v1"));
+    cfg.rules[0].sub_provider = "DeepInfra".into();
+
+    // A plain provider ignores the sub-provider.
+    let gw = Gateway::start(cfg.clone(), fast()).await;
+    assert_eq!(gw.post("/v1/messages", request(false)).send().await.unwrap().status(), 200);
+    assert!(seen.lock().unwrap().body.as_ref().unwrap().get("provider").is_none());
+
+    cfg.providers[0].aggregator = true;
+    let gw = Gateway::start(cfg, fast()).await;
+    assert_eq!(gw.post("/v1/messages", request(false)).send().await.unwrap().status(), 200);
+    assert_eq!(seen.lock().unwrap().body.as_ref().unwrap()["provider"], json!({"only": ["DeepInfra"]}));
+}
+
+fn openai_request(stream: bool) -> Value {
+    json!({
+        "model": "claude-sonnet-5.5",
+        "stream": stream,
+        "max_completion_tokens": 500,
+        "messages": [{"role": "user", "content": "Hi"}]
+    })
+}
+
+#[tokio::test]
+async fn openai_clients_get_chat_completions_passed_through() {
+    let seen: Shared = Default::default();
+    let mock = Router::new()
+        .route(
+            "/v1/chat/completions",
+            post(|State(seen): State<Shared>, headers: HeaderMap, Json(body): Json<Value>| async move {
+                record(&seen, &headers, &body);
+                Json(json!({
+                    "id": "cmpl-1", "object": "chat.completion", "model": "deepseek-v4.1-flash",
+                    "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "Hello!"}}],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 3}
+                }))
+            }),
+        )
+        .with_state(seen.clone());
+    let base = spawn(mock).await;
+    let gw = Gateway::start(config(&format!("{base}/v1")), fast()).await;
+
+    // Both spellings work: clients differ on whether the base URL carries /v1.
+    for path in ["/v1/chat/completions", "/chat/completions"] {
+        let resp = gw.post(path, openai_request(false)).send().await.unwrap();
+        assert_eq!(resp.status(), 200, "{path}");
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["choices"][0]["message"]["content"], "Hello!");
+        assert_eq!(body["usage"]["prompt_tokens"], 12);
+    }
+    let seen = seen.lock().unwrap();
+    let sent = seen.body.as_ref().unwrap();
+    assert_eq!(sent["model"], "deepseek-v4.1-flash");
+    assert_eq!(sent["max_tokens"], 500);
+    assert!(sent.get("max_completion_tokens").is_none());
+    assert_eq!(seen.headers.as_ref().unwrap()["authorization"], "Bearer upstream-secret");
+
+    let log = &gw.core.logs.list()[0];
+    assert_eq!((log.path.as_str(), log.status, log.input_tokens, log.output_tokens), ("/chat/completions", 200, 12, 3));
+    assert_eq!((log.local_model.as_str(), log.upstream_model.as_str(), log.provider.as_str()), ("claude-sonnet-5.5", "deepseek-v4.1-flash", "Mock"));
+}
+
+#[tokio::test]
+async fn openai_stream_is_forwarded_byte_for_byte() {
+    let seen: Shared = Default::default();
+    let mock = Router::new()
+        .route(
+            "/v1/chat/completions",
+            post(|State(seen): State<Shared>, headers: HeaderMap, Json(body): Json<Value>| async move {
+                record(&seen, &headers, &body);
+                let delta = |text: &str| data(json!({"choices": [{"index": 0, "delta": {"content": text}, "finish_reason": null}]}));
+                sse(
+                    StatusCode::OK,
+                    vec![
+                        (0, delta("Hel")),
+                        (0, delta("lo")),
+                        (0, data(json!({"choices": [], "usage": {"prompt_tokens": 20, "completion_tokens": 4}}))),
+                        (0, "data: [DONE]\n\n".to_string()),
+                    ],
+                )
+            }),
+        )
+        .with_state(seen.clone());
+    let base = spawn(mock).await;
+    let gw = Gateway::start(config(&format!("{base}/v1")), fast()).await;
+
+    let resp = gw.post("/v1/chat/completions", openai_request(true)).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(resp.headers()["content-type"].to_str().unwrap().starts_with("text/event-stream"));
+    let text = resp.text().await.unwrap();
+    assert!(text.contains(r#""content":"Hel""#) && text.contains(r#""content":"lo""#));
+    assert!(text.trim_end().ends_with("data: [DONE]"));
+    assert_eq!(seen.lock().unwrap().body.as_ref().unwrap()["stream_options"]["include_usage"], true);
+
+    // the log entry is written once the stream has ended
+    let mut log = None;
+    for _ in 0..50 {
+        log = gw.core.logs.list().into_iter().next();
+        if log.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let log = log.expect("stream was logged");
+    assert_eq!((log.status, log.stream, log.input_tokens, log.output_tokens), (200, true, 20, 4));
+}
+
+#[tokio::test]
+async fn openai_errors_come_back_in_openai_shape() {
+    let mock = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async {
+            (StatusCode::TOO_MANY_REQUESTS, Json(json!({"error": {"message": "slow down", "type": "rate_limit_error", "code": "rate_limit"}})))
+        }),
+    );
+    let base = spawn(mock).await;
+    let gw = Gateway::start(config(&format!("{base}/v1")), fast()).await;
+
+    let resp = gw.post("/v1/chat/completions", openai_request(false)).send().await.unwrap();
+    assert_eq!(resp.status(), 429);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!((body["error"]["message"].as_str(), body["error"]["code"].as_str()), (Some("slow down"), Some("rate_limit")));
+
+    let mut unknown = openai_request(false);
+    unknown["model"] = json!("claude-opus-9");
+    let resp = gw.post("/v1/chat/completions", unknown).send().await.unwrap();
+    assert_eq!(resp.status(), 404);
+    let body: Value = resp.json().await.unwrap();
+    assert!(body["error"]["message"].as_str().unwrap().contains("claude-opus-9"));
+    assert!(body.get("type").is_none(), "no Anthropic envelope on the OpenAI surface");
+
+    let resp = gw.http.post(format!("{}/v1/chat/completions", gw.url)).json(&openai_request(false)).send().await.unwrap();
+    assert_eq!(resp.status(), 401);
+    assert!(resp.json::<Value>().await.unwrap()["error"]["message"].is_string());
+}
+
+#[tokio::test]
+async fn models_list_works_for_openai_clients_too() {
+    let gw = Gateway::start(config("http://127.0.0.1:9"), fast()).await;
+    for path in ["/v1/models", "/models"] {
+        let resp = gw.http.get(format!("{}{path}", gw.url)).bearer_auth(gw.core.local_key()).send().await.unwrap();
+        assert_eq!(resp.status(), 200, "{path}");
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["object"], "list");
+        assert_eq!((body["data"][0]["id"].as_str(), body["data"][0]["object"].as_str()), (Some("claude-sonnet-5.5"), Some("model")));
+    }
 }
 
 #[tokio::test]

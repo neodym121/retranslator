@@ -27,6 +27,9 @@ pub struct ModelRule {
     pub provider_id: String,
     /// The real model id at the provider, e.g. `deepseek-v4.1-flash`.
     pub upstream_model: String,
+    /// The aggregator's sub-provider to pin the request to, e.g. `DeepInfra`. Empty: the aggregator
+    /// picks. Only used when the rule's provider is an aggregator.
+    pub sub_provider: String,
     pub enabled: bool,
     pub display_name: String,
     pub tier: Option<Tier>,
@@ -119,6 +122,14 @@ pub struct Route {
     pub provider: Provider,
 }
 
+impl Route {
+    /// The sub-provider to pin to: set on the rule, and the provider must be an aggregator.
+    pub fn sub_provider(&self) -> Option<&str> {
+        let name = self.rule.sub_provider.trim();
+        (self.provider.aggregator && !name.is_empty()).then_some(name)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteError {
     UnknownModel(String),
@@ -190,7 +201,8 @@ pub fn models_response(cfg: &AppConfig) -> Value {
         .collect();
     let first = data.first().and_then(|m| m.get("id")).cloned().unwrap_or(Value::Null);
     let last = data.last().and_then(|m| m.get("id")).cloned().unwrap_or(Value::Null);
-    json!({ "data": data, "has_more": false, "first_id": first, "last_id": last })
+    // `object` makes the same list valid for OpenAI-style clients.
+    json!({ "object": "list", "data": data, "has_more": false, "first_id": first, "last_id": last })
 }
 
 fn model_entry(rule: &ModelRule) -> Value {
@@ -202,6 +214,11 @@ fn model_entry(rule: &ModelRule) -> Value {
     m.insert("display_name".into(), json!(if display.is_empty() { id } else { display }));
     let created = if rule.created_at.is_empty() { "2025-01-01T00:00:00Z" } else { &rule.created_at };
     m.insert("created_at".into(), json!(created));
+    // OpenAI's model object, alongside Anthropic's fields.
+    m.insert("object".into(), json!("model"));
+    m.insert("owned_by".into(), json!("retranslator"));
+    let unix = chrono::DateTime::parse_from_rfc3339(created).map(|d| d.timestamp()).unwrap_or(0);
+    m.insert("created".into(), json!(unix));
     if let Some(n) = rule.max_input_tokens {
         m.insert("max_input_tokens".into(), json!(n));
     }
@@ -278,6 +295,17 @@ mod tests {
     }
 
     #[test]
+    fn sub_provider_needs_an_aggregator_and_a_name() {
+        let mut c = cfg();
+        c.rules[0].sub_provider = "  DeepInfra ".into();
+        assert_eq!(resolve(&c, "claude-sonnet-5.5").unwrap().sub_provider(), None);
+        c.providers[0].aggregator = true;
+        assert_eq!(resolve(&c, "claude-sonnet-5.5").unwrap().sub_provider(), Some("DeepInfra"));
+        c.rules[0].sub_provider = "  ".into();
+        assert_eq!(resolve(&c, "claude-sonnet-5.5").unwrap().sub_provider(), None);
+    }
+
+    #[test]
     fn models_list_in_anthropic_format() {
         let body = models_response(&cfg());
         assert_eq!(body["has_more"], false);
@@ -292,6 +320,8 @@ mod tests {
         assert_eq!(m["supports_1m"], true);
         assert_eq!(m["max_input_tokens"], 1_000_000);
         assert!(m["created_at"].as_str().unwrap().ends_with('Z'));
+        assert_eq!((body["object"].as_str(), m["object"].as_str(), m["owned_by"].as_str()), (Some("list"), Some("model"), Some("retranslator")));
+        assert!(m["created"].as_i64().unwrap() > 1_700_000_000);
         assert_eq!(body["first_id"], "claude-sonnet-5.5");
     }
 

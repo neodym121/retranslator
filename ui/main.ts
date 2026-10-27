@@ -14,6 +14,7 @@ interface Provider {
   name: string;
   preset: string;
   base_url: string;
+  aggregator: boolean;
   key_hint: string | null;
 }
 interface Rule {
@@ -21,6 +22,7 @@ interface Rule {
   local_id: string;
   provider_id: string;
   upstream_model: string;
+  sub_provider: string;
   enabled: boolean;
   display_name: string;
   tier: Tier | null;
@@ -35,20 +37,20 @@ interface Preset {
   key: string;
   name: string;
   base_url: string;
+  aggregator: boolean;
 }
 interface UiState {
   server: ServerStatus;
   base_url: string;
   local_key: string;
   port: number;
-  autostart: boolean;
+  autostart_server: boolean;
+  autostart_app: boolean;
   language: Lang;
   providers: Provider[];
   rules: Rule[];
   presets: Preset[];
   requests_total: number;
-  version: string;
-  config_dir: string;
 }
 interface LogEntry {
   id: number;
@@ -150,7 +152,7 @@ const ICONS = {
 
 function iconButton(name: keyof typeof ICONS, label: string, onclick: () => void): HTMLElement {
   const btn = h("button", { type: "button", class: "icon-btn", title: label, "aria-label": label, onclick });
-  btn.innerHTML = `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+  btn.innerHTML = `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="square" aria-hidden="true">${ICONS[name]}</svg>`;
   return btn;
 }
 
@@ -253,7 +255,6 @@ function render(): void {
     connect: renderConnect,
     providers: renderProviders,
     models: renderModels,
-    logs: renderLogs,
     server: renderServer,
   };
   views[tab]?.();
@@ -284,8 +285,7 @@ function renderNav(): void {
     connect: t("Подключение", "Connection"),
     providers: t("Провайдеры", "Providers"),
     models: t("Модели", "Models"),
-    logs: t("Логи", "Logs"),
-    server: t("Сервер", "Server"),
+    server: t("Опции", "Options"),
   };
   $("win-min").title = t("Свернуть", "Minimize");
   $("win-close").title = t("Закрыть: сервер останется в трее", "Close: the server stays in the tray");
@@ -329,7 +329,6 @@ function renderConnect(): void {
   const card = h(
     "div",
     { class: "card-light" },
-    h("span", { class: "eyebrow" }, "Developer → Configure Third-Party Inference"),
     valueRow("Gateway base URL", state.base_url, h("button", { class: "btn btn-dark", onclick: () => copy(state.base_url, "Base URL") }, copyLabel)),
     valueRow(
       "Gateway API key",
@@ -359,21 +358,6 @@ function renderConnect(): void {
       h("div", { class: `metric-value${signal ? " signal" : ""}` }, value),
     );
 
-  const kbd = (text: string) => h("span", { class: "kbd" }, text);
-  const steps: Child[][] = [
-    [t("В Claude Desktop: ", "In Claude Desktop: "), kbd("Help → Troubleshooting → Enable Developer Mode"), "."],
-    [t("Откройте ", "Open "), kbd("Developer → Configure Third-Party Inference"), "."],
-    [
-      "Inference provider — ",
-      h("b", {}, "Gateway"),
-      t(". Вставьте Gateway base URL, API key и auth scheme ", ". Paste the Gateway base URL, API key and auth scheme "),
-      kbd("bearer"),
-      t(" из карточки.", " from the card."),
-    ],
-    [t("Нажмите ", "Click "), h("b", {}, "Apply"), "."],
-    [t("Полностью перезапустите Claude Desktop: выйдите через трей и откройте заново.", "Fully restart Claude Desktop: quit it from the tray and open it again.")],
-  ];
-
   $("view-connect").replaceChildren(
     sectionHead(t("Подключение", "Connection"), ""),
     card,
@@ -385,17 +369,9 @@ function renderConnect(): void {
       metric(t("Модели", "Models"), String(activeRules.length)),
       metric(t("Запросы", "Requests"), fmtInt(state.requests_total)),
     ),
-    h(
-      "div",
-      { class: "block-gap" },
-      h("div", { class: "block-title" }, h("span", { class: "eyebrow" }, t("Инструкция", "Setup"))),
-      h(
-        "ol",
-        { class: "steps" },
-        ...steps.map((body, i) => h("li", {}, h("span", { class: "num" }, String(i + 1).padStart(2, "0")), h("span", {}, ...body))),
-      ),
-    ),
+    h("div", { class: "block-gap", id: "connect-logs" }),
   );
+  renderLogs();
 }
 
 async function regenerateKey(): Promise<void> {
@@ -414,14 +390,7 @@ async function regenerateKey(): Promise<void> {
 
 function renderProviders(): void {
   const add = h("button", { class: "btn btn-light", onclick: () => openProvider() }, t("Добавить провайдера", "Add provider"));
-  const head = sectionHead(
-    t("Провайдеры", "Providers"),
-    t(
-      "Куда уходят запросы. API-ключи лежат в системном хранилище Windows (Credential Manager).",
-      "Where requests go. API keys live in the Windows system store (Credential Manager).",
-    ),
-    add,
-  );
+  const head = sectionHead(t("Провайдеры", "Providers"), "", add);
   if (state.providers.length === 0) {
     $("view-providers").replaceChildren(
       head,
@@ -457,8 +426,9 @@ function providerCard(p: Provider): HTMLElement {
     h(
       "div",
       { class: "meta" },
-      p.key_hint ? `${t("Ключ", "Key")} ${p.key_hint}` : h("span", { class: "signal" }, t("Ключ не задан", "No key")),
-      ` · ${t("правил", "rules")}: ${rules}`,
+      p.aggregator ? `${t("Агрегатор", "Aggregator")} · ` : null,
+      p.key_hint ? null : h("span", { class: "signal" }, `${t("Ключ не задан", "No key")} · `),
+      `${t("правил", "rules")}: ${rules}`,
     ),
     check && check !== "pending" && !check.ok ? h("div", { class: "hint signal" }, check.message) : null,
     h(
@@ -500,18 +470,6 @@ async function deleteProvider(p: Provider): Promise<void> {
     t("Удалить", "Delete"),
   );
   if (ok) await act(() => call<UiState>("delete_provider", { id: p.id }), () => t("Провайдер удалён", "Provider deleted"));
-}
-
-/** Same rule as the backend: the base carries the version (`…/v1`), the path is appended. */
-function endpointPreview(base: string): string {
-  let b = base.trim().replace(/\/+$/, "");
-  for (const suffix of ["/chat/completions", "/models"]) if (b.endsWith(suffix)) b = b.slice(0, -suffix.length);
-  b = b.replace(/\/+$/, "");
-  return b ? `${b}/chat/completions` : "";
-}
-
-function endpointText(endpoint: string): string {
-  return endpoint ? t(`Запросы пойдут на ${endpoint}`, `Requests go to ${endpoint}`) : t("Укажите адрес API провайдера", "Enter the provider's API address");
 }
 
 function segmented<T extends string>(options: { value: T; label: string }[], current: T, onPick: (v: T) => void): HTMLElement {
@@ -655,14 +613,25 @@ function field(label: string, ...children: Child[]): HTMLElement {
   return h("div", { class: "field" }, h("span", { class: "mono-label" }, label), ...children);
 }
 
-function openProvider(existing?: Provider): void {
+async function openProvider(existing?: Provider): Promise<void> {
+  // The stored key comes back into the field; emptying the field and saving removes it.
+  let storedKey = "";
+  if (existing?.key_hint) {
+    try {
+      storedKey = await call<string>("get_provider_key", { id: existing.id });
+    } catch (e) {
+      // An empty field would wipe the key on save, so the form does not open at all.
+      toast(errorText(e), "warn");
+      return;
+    }
+  }
   const d = {
     id: existing?.id ?? "",
     preset: existing?.preset ?? "openai",
     name: existing?.preset === "custom" ? existing.name : "",
     base_url: existing?.preset === "custom" ? existing.base_url : "",
-    api_key: "",
-    clear_key: false,
+    aggregator: existing?.preset === "custom" ? existing.aggregator : false,
+    api_key: storedKey,
   };
   let status: Child = null;
   let fetched: string[] | null = null;
@@ -674,17 +643,12 @@ function openProvider(existing?: Provider): void {
   const errorLine = h("div", { class: "modal-error" });
 
   const draw = () => {
-    const preset = presetOf(d.preset);
-    const savedKey = existing?.key_hint && !d.clear_key;
-    const presetEndpoint = h("span", { class: "hint" }, endpointText(endpointPreview(preset.base_url)));
     body.replaceChildren(
       h(
         "div",
         { class: "form" },
         existing
-          ? isCustom()
-            ? null
-            : presetEndpoint
+          ? null
           : field(
               t("Пресет", "Preset"),
               segmented(
@@ -696,7 +660,6 @@ function openProvider(existing?: Provider): void {
                   draw();
                 },
               ),
-              isCustom() ? null : presetEndpoint,
             ),
         ...(isCustom()
           ? [
@@ -716,13 +679,22 @@ function openProvider(existing?: Provider): void {
                   class: "mono-input",
                   value: d.base_url,
                   placeholder: "https://api.example.com/v1",
-                  oninput: (e: Event) => {
-                    d.base_url = (e.target as HTMLInputElement).value;
-                    const hint = body.querySelector<HTMLElement>("[data-endpoint]");
-                    if (hint) hint.textContent = endpointText(endpointPreview(d.base_url));
-                  },
+                  oninput: (e: Event) => (d.base_url = (e.target as HTMLInputElement).value),
                 }),
-                h("span", { class: "hint", "data-endpoint": "" }, endpointText(endpointPreview(d.base_url))),
+              ),
+              field(
+                t("Агрегатор", "Aggregator"),
+                h(
+                  "label",
+                  { class: "switch-row" },
+                  h("input", {
+                    type: "checkbox",
+                    class: "switch",
+                    checked: d.aggregator,
+                    onchange: (e: Event) => (d.aggregator = (e.target as HTMLInputElement).checked),
+                  }),
+                  h("span", { class: "hint" }, t("Как OpenRouter: в правиле можно указать суб-провайдера.", "Like OpenRouter: a rule can name the sub-provider.")),
+                ),
               ),
             ]
           : []),
@@ -733,26 +705,9 @@ function openProvider(existing?: Provider): void {
             class: "mono-input",
             value: d.api_key,
             autocomplete: "off",
-            placeholder: savedKey
-              ? t(`Сохранён ${existing!.key_hint} · пусто — не менять`, `Stored ${existing!.key_hint} · empty keeps it`)
-              : t("Ключ провайдера", "Provider key"),
+            placeholder: t("Ключ провайдера", "Provider key"),
             oninput: (e: Event) => (d.api_key = (e.target as HTMLInputElement).value),
           }),
-          existing?.key_hint
-            ? h(
-                "label",
-                { class: "check hint" },
-                h("input", {
-                  type: "checkbox",
-                  checked: d.clear_key,
-                  onchange: (e: Event) => {
-                    d.clear_key = (e.target as HTMLInputElement).checked;
-                    draw();
-                  },
-                }),
-                t("Удалить сохранённый ключ", "Delete the stored key"),
-              )
-            : null,
         ),
         status,
       ),
@@ -780,7 +735,8 @@ function openProvider(existing?: Provider): void {
     errorLine.textContent = "";
     const before = new Set(state.providers.map((p) => p.id));
     try {
-      const next = await call<UiState>("save_provider", { provider: { ...d } });
+      const clearKey = !!existing?.key_hint && !d.api_key.trim();
+      const next = await call<UiState>("save_provider", { provider: { ...d, clear_key: clearKey } });
       if (fetched) {
         const id = d.id || next.providers.find((p) => !before.has(p.id))?.id;
         if (id) modelCache.set(id, fetched);
@@ -865,7 +821,12 @@ function renderModels(): void {
       ),
       h("td", { class: "cell-arrow" }, "→"),
       h("td", {}, h("div", { class: "mono-strong" }, r.upstream_model)),
-      h("td", {}, provider?.name ?? h("span", { class: "signal" }, t("удалён", "deleted"))),
+      h(
+        "td",
+        {},
+        provider?.name ?? h("span", { class: "signal" }, t("удалён", "deleted")),
+        provider?.aggregator && r.sub_provider ? h("div", { class: "cell-sub mono" }, r.sub_provider) : null,
+      ),
       h(
         "td",
         { class: "cell-actions" },
@@ -931,6 +892,7 @@ function openRule(existing?: Rule): void {
         local_id: "",
         provider_id: state.providers[0]?.id ?? "",
         upstream_model: "",
+        sub_provider: "",
         enabled: true,
         display_name: "",
         tier: null,
@@ -1125,6 +1087,21 @@ function openRule(existing?: Rule): void {
           ),
         ),
         h("div", { class: "slot", "data-models-hint": "" }, modelsHint()),
+        state.providers.find((p) => p.id === d.provider_id)?.aggregator
+          ? field(
+              t("Суб-провайдер", "Sub-provider"),
+              h("input", {
+                type: "text",
+                class: "mono-input",
+                value: d.sub_provider,
+                placeholder: "DeepInfra",
+                autocomplete: "off",
+                spellcheck: "false",
+                oninput: (e: Event) => (d.sub_provider = (e.target as HTMLInputElement).value),
+              }),
+              h("span", { class: "hint" }, t("Пусто — агрегатор выберет сам.", "Empty: the aggregator picks one.")),
+            )
+          : null,
         field(
           t("Отображаемое имя", "Display name"),
           h("input", {
@@ -1241,7 +1218,10 @@ function statusTag(status: number): HTMLElement {
   return h("span", { class: `tag ${kind}`, title: status === 499 ? t("Клиент закрыл соединение", "The client closed the connection") : undefined }, String(status));
 }
 
+/** The request log fills the bottom of the Connection view. */
 function renderLogs(): void {
+  const box = document.getElementById("connect-logs");
+  if (!box) return;
   const clear = h(
     "button",
     {
@@ -1255,9 +1235,9 @@ function renderLogs(): void {
     },
     t("Очистить", "Clear"),
   );
-  const head = sectionHead(t("Логи", "Logs"), "", clear);
+  const head = h("div", { class: "block-head" }, h("span", { class: "eyebrow" }, t("Логи", "Logs")), clear);
   if (logs.length === 0) {
-    $("view-logs").replaceChildren(
+    box.replaceChildren(
       head,
       h(
         "div",
@@ -1296,7 +1276,7 @@ function renderLogs(): void {
     );
   });
   const col = (w: string) => h("col", w ? { width: w } : {});
-  $("view-logs").replaceChildren(
+  box.replaceChildren(
     head,
     h(
       "div",
@@ -1350,57 +1330,42 @@ function renderServer(): void {
       if (e.key === "Enter") applyPort();
     },
   });
-  const info = (label: string, value: Child) => h("div", { class: "info-row" }, h("span", { class: "mono-label" }, label), h("div", {}, value));
   const setting = (label: string, desc: Child, control: Child = null) =>
     h("div", { class: "setting" }, h("span", { class: "mono-label" }, label), h("div", { class: "desc" }, desc), h("div", {}, control));
 
   $("view-server").replaceChildren(
-    sectionHead(t("Сервер", "Server"), ""),
+    sectionHead(t("Опции", "Options"), ""),
     h(
       "div",
       { class: "settings" },
       setting(
-        t("Состояние", "State"),
-        s.running
-          ? h("span", {}, t("Работает на ", "Running on "), h("span", { class: "mono" }, `http://127.0.0.1:${s.port}`))
-          : s.error
-            ? h("span", { class: "signal" }, s.error)
-            : "Stopped",
-        h("button", { class: s.running ? "btn btn-ghost" : "btn btn-light", onclick: toggleServer }, s.running ? t("Остановить", "Stop") : t("Запустить", "Start")),
-      ),
-      setting(
         t("Порт", "Port"),
-        t("От 1024 до 65535. После смены порта обновите Gateway base URL в Claude Desktop.", "From 1024 to 65535. After changing it, update the Gateway base URL in Claude Desktop."),
+        // The start error (a busy port, say) has no other place to show up now.
+        !s.running && s.error ? h("span", { class: "signal" }, s.error) : t("От 1024 до 65535.", "From 1024 to 65535."),
         h("div", { class: "input-with-button" }, portInput, h("button", { class: "btn btn-dark", onclick: applyPort }, t("Применить", "Apply"))),
       ),
       setting(
-        t("Автозапуск", "Autostart"),
+        t("Автозапуск сервера", "Autostart Server"),
         t("Запускать сервер вместе с приложением.", "Start the server together with the app."),
         h("input", {
           type: "checkbox",
           class: "switch",
-          checked: state.autostart,
-          onchange: (e: Event) => act(() => call<UiState>("set_autostart", { enabled: (e.target as HTMLInputElement).checked })),
+          checked: state.autostart_server,
+          onchange: (e: Event) => act(() => call<UiState>("set_autostart_server", { enabled: (e.target as HTMLInputElement).checked })),
         }),
       ),
-    ),
-    h(
-      "div",
-      { class: "block-gap" },
-      h("div", { class: "block-title" }, h("span", { class: "eyebrow" }, t("О приложении", "About"))),
-      h(
-        "div",
-        { class: "card info-card" },
-        info(t("Версия", "Version"), h("span", { class: "mono strong" }, state.version)),
-        info(t("Настройки", "Settings"), h("span", { class: "mono strong" }, state.config_dir)),
-        info(t("Ключи", "Keys"), t("Windows Credential Manager, запись Retranslator", "Windows Credential Manager, entry Retranslator")),
-        info(
-          t("Трей", "Tray"),
-          t(
-            "Закрытие окна выгружает интерфейс из памяти, сервер продолжает работать в трее. Клик по иконке откроет окно снова, выход — через меню трея.",
-            "Closing the window unloads the interface from memory; the server keeps running in the tray. Click the icon to open the window again, quit from the tray menu.",
-          ),
-        ),
+      setting(
+        t("Автозапуск приложения", "Autostart App"),
+        t("Запускать приложение при входе в Windows, сразу в трей.", "Launch the app when you sign in to Windows, straight into the tray."),
+        h("input", {
+          type: "checkbox",
+          class: "switch",
+          checked: state.autostart_app,
+          onchange: (e: Event) =>
+            act(() => call<UiState>("set_autostart_app", { enabled: (e.target as HTMLInputElement).checked })).then((ok) => {
+              if (!ok) renderServer();
+            }),
+        }),
       ),
     ),
   );
@@ -1469,8 +1434,10 @@ async function boot(): Promise<void> {
   await tauri.event.listen<LogEntry>("log-entry", (e) => {
     logs.unshift(e.payload);
     if (logs.length > MAX_LOGS) logs.length = MAX_LOGS;
-    if (tab === "logs") renderLogs();
-    if (tab === "connect") refreshSoon();
+    if (tab === "connect") {
+      renderLogs();
+      refreshSoon();
+    }
   });
 
   state = await call<UiState>("get_state");

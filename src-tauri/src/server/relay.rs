@@ -58,7 +58,7 @@ impl Call {
     }
 }
 
-fn unreachable_error(e: &reqwest::Error) -> ApiError {
+pub(super) fn unreachable_error(e: &reqwest::Error) -> ApiError {
     let status = if e.is_timeout() { 504 } else { 502 };
     let kind = if e.is_timeout() { "timeout_error" } else { "api_error" };
     ApiError::new(status, kind, format!("upstream unreachable: {}", describe_reqwest(e)))
@@ -78,6 +78,7 @@ pub async fn relay(call: Call, route: Route, key: String, value: Value) -> Respo
         stream,
         max_tokens_cap: route.rule.max_output_tokens,
         quirks: quirks(&route.provider.base_url),
+        sub_provider: route.sub_provider().map(str::to_string),
     };
     let body = to_openai(&req, &opts);
     let names = request_tool_names(&req);

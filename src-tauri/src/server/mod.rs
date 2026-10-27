@@ -1,6 +1,7 @@
 //! The local gateway: axum on 127.0.0.1, start/stop control.
 
 mod handlers;
+mod openai;
 mod relay;
 
 use std::sync::{Arc, RwLock};
@@ -53,6 +54,10 @@ pub fn router(ctx: Ctx) -> Router {
         .route("/v1/messages/count_tokens", post(handlers::count_tokens))
         .route("/v1/models", get(handlers::list_models))
         .route("/v1/models/{*id}", get(handlers::get_model))
+        // The OpenAI surface; clients differ on whether their base URL carries `/v1`.
+        .route("/v1/chat/completions", post(openai::chat_completions))
+        .route("/chat/completions", post(openai::chat_completions))
+        .route("/models", get(handlers::list_models))
         .route("/api/hello", get(handlers::hello))
         .fallback(handlers::not_found)
         .layer(DefaultBodyLimit::max(BODY_LIMIT))

@@ -4,7 +4,8 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
+use tauri_plugin_autostart::ManagerExt;
 
 use crate::i18n::{self, t, Lang};
 use crate::logs::LogEntry;
@@ -16,6 +17,7 @@ use crate::state::Core;
 pub struct AppState {
     pub core: Arc<Core>,
     pub server: Arc<Server>,
+    pub app: AppHandle,
 }
 
 #[derive(Serialize)]
@@ -38,14 +40,14 @@ pub struct UiState {
     pub base_url: String,
     pub local_key: String,
     pub port: u16,
-    pub autostart: bool,
+    pub autostart_server: bool,
+    /// Launch at Windows login. Read from the system, so a change made there shows up too.
+    pub autostart_app: bool,
     pub language: Lang,
     pub providers: Vec<ProviderView>,
     pub rules: Vec<RuleView>,
     pub presets: &'static [Preset],
     pub requests_total: u64,
-    pub version: &'static str,
-    pub config_dir: String,
 }
 
 pub fn snapshot(state: &AppState) -> UiState {
@@ -56,7 +58,8 @@ pub fn snapshot(state: &AppState) -> UiState {
         base_url: format!("http://127.0.0.1:{}", cfg.port),
         local_key: core.local_key(),
         port: cfg.port,
-        autostart: cfg.autostart_server,
+        autostart_server: cfg.autostart_server,
+        autostart_app: state.app.autolaunch().is_enabled().unwrap_or(false),
         language: cfg.language,
         providers: cfg
             .providers
@@ -70,8 +73,6 @@ pub fn snapshot(state: &AppState) -> UiState {
             .collect(),
         presets: PRESETS,
         requests_total: core.logs.total(),
-        version: env!("CARGO_PKG_VERSION"),
-        config_dir: core.config_dir().display().to_string(),
     }
 }
 
@@ -109,11 +110,19 @@ pub async fn set_port(state: State<'_, AppState>, port: u16) -> Result<UiState, 
 }
 
 #[tauri::command]
-pub fn set_autostart(state: State<'_, AppState>, enabled: bool) -> Result<UiState, String> {
+pub fn set_autostart_server(state: State<'_, AppState>, enabled: bool) -> Result<UiState, String> {
     state.core.update_config(|c| {
         c.autostart_server = enabled;
         Ok(())
     })?;
+    Ok(snapshot(&state))
+}
+
+#[tauri::command]
+pub fn set_autostart_app(state: State<'_, AppState>, enabled: bool) -> Result<UiState, String> {
+    let launch = state.app.autolaunch();
+    let result = if enabled { launch.enable() } else { launch.disable() };
+    result.map_err(|e| t(format!("Не удалось изменить автозапуск: {e}"), format!("Could not change autostart: {e}")))?;
     Ok(snapshot(&state))
 }
 
@@ -144,6 +153,8 @@ pub struct ProviderInput {
     pub name: String,
     #[serde(default)]
     pub base_url: String,
+    #[serde(default)]
+    pub aggregator: bool,
     /// Empty keeps the stored key.
     #[serde(default)]
     pub api_key: String,
@@ -170,6 +181,7 @@ pub fn save_provider(state: State<'_, AppState>, provider: ProviderInput) -> Res
         name: provider.name.trim().to_string(),
         preset: provider.preset.clone(),
         base_url: provider.base_url.trim().trim_end_matches('/').to_string(),
+        aggregator: provider.aggregator,
     };
     providers::apply_preset(&mut value);
     check_base_url(&value.base_url)?;
@@ -190,6 +202,12 @@ pub fn save_provider(state: State<'_, AppState>, provider: ProviderInput) -> Res
         Ok(())
     })?;
     Ok(snapshot(&state))
+}
+
+/// The stored key of a provider, for the edit form (the key never rides along with the shared state).
+#[tauri::command]
+pub fn get_provider_key(state: State<'_, AppState>, id: String) -> String {
+    state.core.provider_key(&id)
 }
 
 #[tauri::command]
@@ -250,6 +268,10 @@ pub fn save_rule(state: State<'_, AppState>, rule: ModelRule) -> Result<UiState,
         rule.local_id = rule.local_id.trim().to_string();
         rule.upstream_model = rule.upstream_model.trim().to_string();
         rule.display_name = rule.display_name.trim().to_string();
+        rule.sub_provider = rule.sub_provider.trim().to_string();
+        if !c.provider(&rule.provider_id).is_some_and(|p| p.aggregator) {
+            rule.sub_provider.clear();
+        }
         if rule.tier.is_none() {
             rule.family_default = false;
         }
